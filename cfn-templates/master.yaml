@@ -1,0 +1,197 @@
+Description: >
+
+  This template deploys a VPC, with a pair of public and private subnets spread 
+  across two Availabilty Zones. It deploys an Internet Gateway, with a default 
+  route on the public subnets. It deploys a pair of NAT Gateways (one in each AZ), 
+  and default routes for them in the private subnets.
+
+  It then deploys a highly available ECS cluster using an AutoScaling Group, with 
+  ECS hosts distributed across multiple Availability Zones. 
+
+  Finally, it deploys a pair of example ECS services from containers published in 
+  Amazon EC2 Container Registry (Amazon ECR).
+
+Parameters:
+  TemplateBaseURL:
+    Type: String
+    Description: >
+      Set your S3 bucket URL to host cfn templates with the format.
+    Default:
+      https://s3-<<YOUR_AWS_REGION>>.amazonaws.com/<<YOUR_S3_BUCKET_NAME>>/
+  CertificateArn:
+    Type: String
+    Description: >
+      Set ARN of an ACM SSL certificate applied to the RedashDomain
+    Default: arn:aws:acm:<<YOUR_AWS_REGION>>:<<YOUR_AWS_ACCOUNT_ID>>:certificate/<<YOUR_CERTIFICATE_ID>>
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ""
+    Description: >
+      Set a name of key pair for redash app EC2 instance
+  RedashZoneName:
+    Type: String
+    Description: >
+      Set your exiting zone name to host redash of Route53.
+    Default: example.com
+  RedashDomainName:
+    Type: String
+    Description: >
+      Set your desired domain to host redash whose record will be created on Route53. Make sure you have setup a proper certification for the domain as CertificateArn.
+    Default: redash.example.com
+  RedashAppTaskDefinitionArn:
+    Type: String
+    Description: >
+      Set your ARN of ECS TaskDefinition for redash app with the format.
+    Default: arn:aws:ecs:<<YOUR_AWS_REGION>>:<<YOUR_AWS_ACCOUNT_ID>>:task-definition/redash-app:<<revision>>
+  RedashBotTaskDefinitionArn:
+    Type: String
+    Description: >
+      Set your ARN of ECS TaskDefinition for redash bot with the format.
+    Default: arn:aws:ecs:<<YOUR_AWS_REGION>>:<<YOUR_AWS_ACCOUNT_ID>>:task-definition/redash-bot:<<revision>>
+  ShouldRedashBotLaunched:
+    Description: >
+      If this parameter is set to true, redash bot is launched.
+      You can set this parameter to true, after redash app gets ready
+      because API key of redash app is needed for the bot.
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  VpcCIDR:
+    Type: String
+    Default : "10.180.0.0/16"
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/16"
+Conditions:
+  ShouldRedashBotLaunched: !Equals [!Ref ShouldRedashBotLaunched, true]
+Resources:
+  VPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ["", [!Ref TemplateBaseURL, "infrastructure/vpc.yaml"]]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VpcCIDR: !Ref VpcCIDR
+        PublicSubnet1CIDR:
+          Fn::Select:
+            - 0
+            - Fn::Cidr:
+              - !Ref VpcCIDR
+              - 4
+              - 11
+        PublicSubnet2CIDR:
+          Fn::Select:
+            - 1
+            - Fn::Cidr:
+              - !Ref VpcCIDR
+              - 4
+              - 11
+        PrivateSubnet1CIDR:
+          Fn::Select:
+            - 2
+            - Fn::Cidr:
+              - !Ref VpcCIDR
+              - 4
+              - 11
+        PrivateSubnet2CIDR:
+          Fn::Select:
+            - 3
+            - Fn::Cidr:
+              - !Ref VpcCIDR
+              - 4
+              - 11
+
+  SecurityGroups:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL:
+        !Join [
+          "",
+          [!Ref TemplateBaseURL, "infrastructure/security-groups.yaml"],
+        ]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        NatGateway1EIP: !GetAtt VPC.Outputs.NatGateway1EIP
+        NatGateway2EIP: !GetAtt VPC.Outputs.NatGateway2EIP
+
+  ALB:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL:
+        !Join ["", [!Ref TemplateBaseURL, "infrastructure/load-balancers.yaml"]]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        Subnets: !GetAtt VPC.Outputs.PublicSubnets
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.LoadBalancerSecurityGroup
+        CertificateArn: !Ref CertificateArn
+
+  RedashAppECS:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL:
+        !Join ["", [!Ref TemplateBaseURL, "infrastructure/ecs-cluster.yaml"]]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        InstanceType: t3.medium
+        ClusterSize: 1
+        ClusterNamePrefix: redash-app
+        VPC: !GetAtt VPC.Outputs.VPC
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.ECSHostSecurityGroup
+        Subnets: !GetAtt VPC.Outputs.PublicSubnets
+        KeyPairName: !Ref KeyPairName
+
+  RedashBotECS:
+    Condition: ShouldRedashBotLaunched
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL:
+        !Join ["", [!Ref TemplateBaseURL, "infrastructure/ecs-cluster.yaml"]]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        InstanceType: t2.micro
+        ClusterSize: 1
+        ClusterNamePrefix: redash-bot
+        VPC: !GetAtt VPC.Outputs.VPC
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.ECSHostSecurityGroup
+        Subnets: !GetAtt VPC.Outputs.PrivateSubnets
+        KeyPairName: !Ref KeyPairName
+
+  RedashAppService:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ["", [!Ref TemplateBaseURL, "service/redash-app.yaml"]]
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        Cluster: !GetAtt RedashAppECS.Outputs.Cluster
+        DesiredCount: 1
+        Listener: !GetAtt ALB.Outputs.Listener
+        OriginInstanceSecurityGroup: !GetAtt SecurityGroups.Outputs.ECSHostSecurityGroup
+        Subnets: !GetAtt VPC.Outputs.PrivateSubnets
+        TaskDefinitionArn: !Ref RedashAppTaskDefinitionArn
+        Path: /*
+        LoadBalancerUrl: !GetAtt ALB.Outputs.LoadBalancerUrl
+        RedashDomainName: !Ref RedashDomainName
+        RedashZoneName: !Ref RedashZoneName
+
+  RedashBotService:
+    Condition: ShouldRedashBotLaunched
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ["", [!Ref TemplateBaseURL, "service/redash-bot.yaml"]]
+      Parameters:
+        VPC: !GetAtt VPC.Outputs.VPC
+        Cluster: !GetAtt RedashBotECS.Outputs.Cluster
+        DesiredCount: 1
+        TaskDefinitionArn: !Ref RedashBotTaskDefinitionArn
+
+  LifecycleHook:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL:
+        !Join ["", [!Ref TemplateBaseURL, "infrastructure/lifecyclehook.yaml"]]
+      Parameters:
+        Cluster: !GetAtt RedashAppECS.Outputs.Cluster
+        ECSAutoScalingGroupName: !GetAtt RedashAppECS.Outputs.ECSAutoScalingGroupName

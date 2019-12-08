@@ -1,0 +1,35 @@
+version: 1
+task_definition:
+  task_execution_role: ecsTaskExecutionRoleWithSsmRead-YOUR_STACK_NAME
+  services:
+    server:
+      secrets:
+        - value_from: /YOUR_STACK_NAME/RedashDbEndpoint
+          name: REDASH_DATABASE_URL
+        - value_from: /YOUR_STACK_NAME/RedashRedisEndpoint
+          name: REDASH_REDIS_URL
+    create_db:
+      essential: false
+      secrets:
+        - value_from: /YOUR_STACK_NAME/RedashDbEndpoint
+          name: REDASH_DATABASE_URL
+        - value_from: /YOUR_STACK_NAME/RedashRedisEndpoint
+          name: REDASH_REDIS_URL
+    scheduler:
+      secrets:
+        - value_from: /YOUR_STACK_NAME/RedashDbEndpoint
+          name: REDASH_DATABASE_URL
+        - value_from: /YOUR_STACK_NAME/RedashRedisEndpoint
+          name: REDASH_REDIS_URL
+    scheduled_worker:
+      secrets:
+        - value_from: /YOUR_STACK_NAME/RedashDbEndpoint
+          name: REDASH_DATABASE_URL
+        - value_from: /YOUR_STACK_NAME/RedashRedisEndpoint
+          name: REDASH_REDIS_URL
+    adhoc_worker:
+      secrets:
+        - value_from: /YOUR_STACK_NAME/RedashDbEndpoint
+          name: REDASH_DATABASE_URL
+        - value_from: /YOUR_STACK_NAME/RedashRedisEndpoint
+          name: REDASH_REDIS_URL

@@ -1,0 +1,14 @@
+version: "2"
+services:
+  redashbot:
+    image: yamitzky/redashbot:latest
+    mem_limit: 402653184
+    environment:
+      SLACK_MESSAGE_EVENTS: "direct_message,direct_mention,mention,ambient"
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: ecs-redash
+        awslogs-stream-prefix: redash-bot

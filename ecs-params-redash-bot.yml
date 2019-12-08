@@ -1,0 +1,3 @@
+version: 1
+task_definition:
+  task_execution_role: ecsTaskExecutionRoleWithSsmRead-YOUR_STACK_NAME

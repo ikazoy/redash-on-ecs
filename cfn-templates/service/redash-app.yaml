@@ -1,0 +1,281 @@
+Description: >
+  This is an example of a long running ECS service that serves a JSON API of products.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+  VPC:
+    Description: The VPC that the ECS cluster is deployed to
+    Type: AWS::EC2::VPC::Id
+
+  OriginInstanceSecurityGroup:
+    Description: Select the Security Group to use for the ECS cluster hosts
+    Type: AWS::EC2::SecurityGroup::Id
+
+  Cluster:
+    Description: Please provide the ECS Cluster ID that this service should run on
+    Type: String
+
+  DesiredCount:
+    Description: How many instances of this task should we run across our cluster?
+    Type: Number
+    Default: 1
+
+  Listener:
+    Description: The Application Load Balancer listener to register with
+    Type: String
+
+  Path:
+    Description: The path to register with the Application Load Balancer
+    Type: String
+    Default: /
+
+  TaskDefinitionArn:
+    Description: ARN of task definition you want to launch as a service. You cannnot use 'latest' to specify a revision of it.
+    Type: String
+    Default: ""
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 50
+
+  Subnets:
+    Description: Choose which subnets RDS and Redis should be launched in
+    Type: List<AWS::EC2::Subnet::Id>
+
+  LoadBalancerUrl:
+    Type: String
+
+  RedashZoneName:
+    Type: String
+
+  RedashDomainName:
+    Type: String
+
+Conditions:
+  isTaskDefinitionArnDefined: !Not [!Equals [!Ref TaskDefinitionArn, ""]]
+
+Resources:
+  RedashDbEndpoint:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub /${EnvironmentName}/RedashDbEndpoint
+      Type: "String"
+      Value: !Sub postgresql://redash:{{resolve:ssm:RedashDbPassword:1}}@${RDS.Endpoint.Address}:${RDS.Endpoint.Port}/redash
+      Description: "Endpoint of redash database"
+  DnsRecord:
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      HostedZoneName: !Sub ${RedashZoneName}.
+      Name: !Sub ${RedashDomainName}.
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !Ref LoadBalancerUrl
+  DBSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: !Ref EnvironmentName
+      SubnetIds: !Ref Subnets
+  RDS:
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      AllocatedStorage: !Ref DBAllocatedStorage
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: 30
+      DBInstanceClass: db.t2.micro
+      DBName: redash
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: postgres
+      EngineVersion: 10.6
+      MasterUsername: redash
+      MasterUserPassword: "{{resolve:ssm:RedashDbPassword:1}}"
+      MultiAZ: false
+      PreferredBackupWindow: "18:00-19:00"
+      PreferredMaintenanceWindow: "Sun:19:00-Sun:20:00"
+      StorageType: gp2
+      StorageEncrypted: false
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  DatabaseSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Ref EnvironmentName
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref OriginInstanceSecurityGroup
+  RedisSubnet:
+    Type: "AWS::ElastiCache::SubnetGroup"
+    Properties:
+      CacheSubnetGroupName: !Sub elasticache-subnet-group-${EnvironmentName}
+      Description: elasticache-subnet-group
+      SubnetIds: !Ref Subnets
+  RedisParameterGroup:
+    Type: "AWS::ElastiCache::ParameterGroup"
+    Properties:
+      CacheParameterGroupFamily: redis5.0
+      Description: "redis cluster Params"
+      Properties:
+        cluster-enabled: "no"
+  RedisEndpoint:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub /${EnvironmentName}/RedashRedisEndpoint
+      Type: "String"
+      Value: !Sub "redis://${RedisCacheCluster.RedisEndpoint.Address}:${RedisCacheCluster.RedisEndpoint.Port}/0"
+      Description: "redash endpoint"
+  RedisCacheCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      AutoMinorVersionUpgrade: true
+      Engine: redis
+      EngineVersion: 5.0.3
+      CacheNodeType: cache.t2.small
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      CacheSubnetGroupName: !Ref RedisSubnet
+      Port: 6379
+      SnapshotRetentionLimit: 14
+      SnapshotWindow: 17:00-21:00
+      NumCacheNodes: 1
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+  RedisSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Ref EnvironmentName
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref OriginInstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  Service:
+    Type: AWS::ECS::Service
+    Condition: isTaskDefinitionArnDefined
+    DependsOn:
+    - ListenerRule
+    - RDS
+    - RedashDbEndpoint
+    - RedisEndpoint
+    Properties:
+      Cluster: !Ref Cluster
+      Role: !Ref ServiceRole
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinitionArn
+      LoadBalancers:
+        - ContainerName: "server"
+          ContainerPort: 5000
+          TargetGroupArn: !Ref TargetGroup
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: isTaskDefinitionArnDefined
+    Properties:
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        # redash top page (/) can be redirected to /login with 302 status
+        # also /login can be recirected to /setup with 302 status
+        HttpCode: 200-302
+      HealthCheckEnabled: !If [isTaskDefinitionArnDefined, true, false]
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: isTaskDefinitionArnDefined
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 2
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - !Ref Path
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+
+  # This IAM Role grants the service access to register/unregister with the
+  # Application Load Balancer (ALB). It is based on the default documented here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/service_IAM_role.html
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-service-${EnvironmentName}
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "ecs.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: !Sub ecs-service-${EnvironmentName}
+          PolicyDocument:
+            {
+              "Version": "2012-10-17",
+              "Statement":
+                [
+                  {
+                    "Effect": "Allow",
+                    "Action":
+                      [
+                        "ec2:AuthorizeSecurityGroupIngress",
+                        "ec2:Describe*",
+                        "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                        "elasticloadbalancing:Describe*",
+                        "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                        "elasticloadbalancing:DeregisterTargets",
+                        "elasticloadbalancing:DescribeTargetGroups",
+                        "elasticloadbalancing:DescribeTargetHealth",
+                        "elasticloadbalancing:RegisterTargets",
+                      ],
+                    "Resource": "*",
+                  },
+                ],
+            }
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecsTaskExecutionRoleWithSsmRead-${EnvironmentName}
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Action": "sts:AssumeRole",
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "ecs-tasks.amazonaws.com"
+                }
+            }]
+        }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ssm:DescribeParameters"
+                  - "ssm:GetParameters"
+                  - "ssm:GetParameter"
+                Resource: "*"

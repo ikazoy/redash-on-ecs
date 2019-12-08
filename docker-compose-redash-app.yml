@@ -1,0 +1,78 @@
+version: "2"
+x-redash-service: &redash-service
+  image: redash/redash:8.0.0.b32245
+services:
+  server:
+    <<: *redash-service
+    command: "server"
+    mem_reservation: 314572800
+    mem_limit: 3221223822
+    ports:
+      - "0:5000"
+    environment:
+      REDASH_WEB_WORKERS: 4
+      # I am not sure what environment variables are required to what services
+      # Just set up all possibly required variables to all services, which is not a good way
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: $AWS_LOG_GROUP
+        awslogs-stream-prefix: redash-server
+  create_db:
+    <<: *redash-service
+    command: "create_db"
+    mem_reservation: 314572800
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: ecs-redash
+        awslogs-stream-prefix: redash-createdb
+  scheduler:
+    <<: *redash-service
+    command: scheduler
+    mem_reservation: 314572800
+    mem_limit: 3221223822
+    environment:
+      QUEUES: "celery"
+      WORKERS_COUNT: 1
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: $AWS_LOG_GROUP
+        awslogs-stream-prefix: redash-server
+  scheduled_worker:
+    <<: *redash-service
+    command: worker
+    mem_reservation: 314572800
+    mem_limit: 3221223822
+    environment:
+      QUEUES: "scheduled_queries,schemas"
+      WORKERS_COUNT: 1
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: $AWS_LOG_GROUP
+        awslogs-stream-prefix: redash-server
+  adhoc_worker:
+    <<: *redash-service
+    command: worker
+    mem_reservation: 314572800
+    mem_limit: 3221223822
+    environment:
+      QUEUES: "queries"
+      WORKERS_COUNT: 2
+    env_file: .env
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $AWS_REGION
+        awslogs-group: $AWS_LOG_GROUP
+        awslogs-stream-prefix: redash-server
