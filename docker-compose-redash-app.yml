@@ -29,7 +29,7 @@ services:
       driver: awslogs
       options:
         awslogs-region: $AWS_REGION
-        awslogs-group: ecs-redash
+        awslogs-group: $AWS_LOG_GROUP
         awslogs-stream-prefix: redash-createdb
   scheduler:
     <<: *redash-service
